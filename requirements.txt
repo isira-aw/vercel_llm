@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-dotenv
+pinecone-client
+semantic-router
+groq
+deep-translator
+pydantic
+speechrecognition
+python-multipart
+torch
+transformers
+rich
+numpy
