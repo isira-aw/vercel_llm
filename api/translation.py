@@ -1,7 +1,9 @@
 from deep_translator import GoogleTranslator
 
 def sinhalaToEnglish(query: str) -> str:
-    return GoogleTranslator(source="si", target="en").translate(query)
+    translator = GoogleTranslator(source="si", target="en")
+    return translator.translate(query)
 
 def englishToSinhala(text: str) -> str:
-    return GoogleTranslator(source="en", target="si").translate(text)
+    translator = GoogleTranslator(source="en", target="si")
+    return translator.translate(text)

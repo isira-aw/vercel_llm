@@ -16,7 +16,7 @@ def get_answer(request: QueryRequest):
     try:
         english_query = sinhalaToEnglish(request.query)
         docs = get_docs(english_query, top_k=5)
-        answer = generate_answer(request.query, docs)
+        answer = generate_answer(english_query, docs)
         return {"answer": answer}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
