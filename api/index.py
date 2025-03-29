@@ -4,9 +4,9 @@ import os
 from dotenv import load_dotenv
 from pinecone import Pinecone
 from deep_translator import GoogleTranslator
-from transformers import AutoTokenizer, AutoModel
-import torch
 import requests
+import json
+import numpy as np
 from typing import List, Dict, Any, Optional
 
 # Load environment variables
@@ -17,6 +17,7 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "mommycareknowledgebase")
 HF_API_KEY = os.getenv("HF_API_KEY")
 HF_API_URL = os.getenv("HF_API_URL", "https://api-inference.huggingface.co/models/meta-llama/Llama-2-70b-chat-hf")
+HF_EMBEDDING_URL = os.getenv("HF_EMBEDDING_URL", "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2")
 
 # Initialize Pinecone
 try:
@@ -27,43 +28,28 @@ except Exception as e:
     print(f"Pinecone initialization error: {str(e)}")
     index = None
 
-# Initialize sentence transformer for encoding - a lightweight model for embeddings
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-try:
-    tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL_NAME)
-    model = AutoModel.from_pretrained(EMBEDDING_MODEL_NAME)
-    print(f"Embedding model {EMBEDDING_MODEL_NAME} initialized successfully")
-    
-    # Mean Pooling function to get sentence embeddings
-    def mean_pooling(model_output, attention_mask):
-        token_embeddings = model_output[0]
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+# Function to get embeddings from Hugging Face API
+def get_embeddings(text):
+    """Get embeddings using Hugging Face API instead of local model"""
+    try:
+        headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+        payload = {"inputs": text}
+        response = requests.post(HF_EMBEDDING_URL, headers=headers, json=payload)
         
-    # Get embeddings function
-    def get_embeddings(text):
-        # Tokenize sentences
-        encoded_input = tokenizer(text, padding=True, truncation=True, return_tensors='pt', max_length=512)
-        
-        # Compute token embeddings
-        with torch.no_grad():
-            model_output = model(**encoded_input)
-            
-        # Perform pooling
-        embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
-        
-        # Normalize embeddings
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-        
-        return embeddings[0].tolist()  # Convert to list for Pinecone
-    
-except Exception as e:
-    print(f"Embedding model initialization error: {str(e)}")
-    
-    def get_embeddings(text):
-        # Fallback to random vectors if model fails
-        print("WARNING: Using fallback random embeddings")
-        return [0.1] * 384  # MiniLM output dimension
+        if response.status_code == 200:
+            # The API returns a list of embeddings, we need the first one
+            embedding = response.json()
+            if isinstance(embedding, list):
+                # If it's a batch response, take the first one
+                return embedding[0]
+            return embedding
+        else:
+            print(f"Embedding API error: {response.status_code} - {response.text}")
+            # Return a fallback random vector on error
+            return np.random.rand(384).tolist()  # MiniLM dimension is 384
+    except Exception as e:
+        print(f"Error getting embeddings: {str(e)}")
+        return np.random.rand(384).tolist()  # Fallback to random
 
 # Translation functions
 def sinhala_to_english(query: str) -> str:
@@ -179,7 +165,6 @@ async def root():
     status = {
         "status": "API is running",
         "pinecone": "connected" if index else "disconnected",
-        "embedding_model": "initialized" if 'model' in globals() else "not initialized",
         "huggingface_api": "configured" if HF_API_KEY else "not configured"
     }
     return status
@@ -198,13 +183,19 @@ async def api_get_answer(request: QueryRequest):
         english_query = sinhala_to_english(request.query)
         print(f"Translated/processed query: {english_query}")
         
-        # Retrieve relevant documents
-        docs = get_docs(english_query, top_k=3)
-        print(f"Retrieved {len(docs)} documents")
+        # Generate answer directly without document retrieval if Pinecone fails
+        answer = "I'm sorry, I couldn't process your request at this time."
         
-        # Generate answer
-        answer = generate_answer(english_query, docs)
-        print(f"Generated answer length: {len(answer)}")
+        if HF_API_KEY:
+            # Try to get documents first
+            docs = []
+            if index:
+                docs = get_docs(english_query, top_k=3)
+                print(f"Retrieved {len(docs)} documents")
+            
+            # Generate answer
+            answer = generate_answer(english_query, docs)
+            print(f"Generated answer length: {len(answer)}")
         
         return {"answer": answer}
     except Exception as e:
@@ -226,13 +217,19 @@ async def api_get_answer_sinhala(request: QueryRequest):
         english_query = sinhala_to_english(request.query)
         print(f"Translated to English: {english_query}")
         
-        # Retrieve relevant documents
-        docs = get_docs(english_query, top_k=3)
-        print(f"Retrieved {len(docs)} documents")
-        
         # Generate answer in English
-        english_answer = generate_answer(english_query, docs)
-        print(f"Generated English answer: {english_answer[:100]}...")
+        english_answer = "I'm sorry, I couldn't process your request at this time."
+        
+        if HF_API_KEY:
+            # Try to get documents first
+            docs = []
+            if index:
+                docs = get_docs(english_query, top_k=3)
+                print(f"Retrieved {len(docs)} documents")
+            
+            # Generate answer
+            english_answer = generate_answer(english_query, docs)
+            print(f"Generated English answer: {english_answer[:100]}...")
         
         # Translate back to Sinhala
         sinhala_answer = english_to_sinhala(english_answer)
@@ -243,7 +240,3 @@ async def api_get_answer_sinhala(request: QueryRequest):
         print(f"Error in get_answer_sinhala: {str(e)}")
         error_msg = f"I'm sorry, I couldn't process your request. Error: {str(e)}"
         return {"answer": english_to_sinhala(error_msg)}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
